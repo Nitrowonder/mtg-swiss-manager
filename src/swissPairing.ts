@@ -56,7 +56,7 @@ export const generateSwissPairings = (
   const newPairings: Pairing[] = []
   let unpaired: Player[] = []
 
-  // Pair within each point group
+  // Pair within each point group with strict no-repeat policy
   for (const pointGroup of sortedPointGroups) {
     const availablePlayers = [...pointGroup, ...unpaired]
     unpaired = []
@@ -81,10 +81,8 @@ export const generateSwissPairings = (
         }
       }
 
-      if (!paired && shuffledPlayers.length > 0) {
-        const player2 = shuffledPlayers.shift()!
-        createPairing(player1, player2, newPairings, currentRound)
-      } else if (!paired) {
+      // If no valid pairing found, add to unpaired for next round or cross-bracket pairing
+      if (!paired) {
         unpaired.push(player1)
       }
     }
@@ -94,51 +92,87 @@ export const generateSwissPairings = (
     }
   }
 
-  // Handle unpaired players (BYE assignment)
+  // Handle unpaired players - try cross-bracket pairing first
+  if (unpaired.length >= 2) {
+    // Attempt to pair unpaired players from different point groups
+    const tempUnpaired = [...unpaired]
+    unpaired = []
+
+    while (tempUnpaired.length > 1) {
+      const player1 = tempUnpaired.shift()!
+      let paired = false
+
+      for (let i = 0; i < tempUnpaired.length; i++) {
+        const player2 = tempUnpaired[i]
+        
+        if (!havePlayedBefore(player1.id, player2.id, allPairings)) {
+          tempUnpaired.splice(i, 1)
+          createPairing(player1, player2, newPairings, currentRound)
+          paired = true
+          break
+        }
+      }
+
+      if (!paired) {
+        unpaired.push(player1)
+      }
+    }
+
+    if (tempUnpaired.length === 1) {
+      unpaired.push(tempUnpaired[0])
+    }
+  }
+
+  // Handle remaining unpaired players (BYE assignment or forced pairing)
   if (unpaired.length === 1) {
     assignBye(unpaired[0], newPairings, currentRound, updatePlayerBye)
-  } else if (unpaired.length > 1) {
-    // For round 1: random BYE assignment
-    if (currentRound === 1) {
-      // Randomly select one player for BYE
-      const randomIndex = Math.floor(Math.random() * unpaired.length)
-      const byePlayer = unpaired.splice(randomIndex, 1)[0]
-      assignBye(byePlayer, newPairings, currentRound, updatePlayerBye)
-    } else {
-      // For subsequent rounds: lowest ranking gets BYE
-      // Sort by points (ascending) and then by BYE history (those without BYE first)
-      unpaired.sort((a, b) => {
-        const pointsA = getPlayerPoints(a)
-        const pointsB = getPlayerPoints(b)
+  } else if (unpaired.length >= 2) {
+    // Last resort: if we still have unpaired players, we may need to allow repeat pairings
+    // But first, try to minimize this by giving someone a BYE if odd number
+    if (unpaired.length % 2 === 1) {
+      // For round 1: random BYE assignment
+      if (currentRound === 1) {
+        const randomIndex = Math.floor(Math.random() * unpaired.length)
+        const byePlayer = unpaired.splice(randomIndex, 1)[0]
+        assignBye(byePlayer, newPairings, currentRound, updatePlayerBye)
+      } else {
+        // For subsequent rounds: player with fewest points and no BYE history gets BYE
+        unpaired.sort((a, b) => {
+          const pointsA = getPlayerPoints(a)
+          const pointsB = getPlayerPoints(b)
+          
+          if (pointsA !== pointsB) {
+            return pointsA - pointsB // Lowest points first
+          }
+          
+          // If tied on points, prioritize those without BYE history
+          if (a.hasByeHistory !== b.hasByeHistory) {
+            return (a.hasByeHistory ? 1 : 0) - (b.hasByeHistory ? 1 : 0)
+          }
+          
+          return Math.random() - 0.5
+        })
         
-        if (pointsA !== pointsB) {
-          return pointsA - pointsB // Lowest points first
-        }
-        
-        // If tied on points, prioritize those without BYE history
-        if (a.hasByeHistory !== b.hasByeHistory) {
-          return (a.hasByeHistory ? 1 : 0) - (b.hasByeHistory ? 1 : 0)
-        }
-        
-        // If still tied, random
-        return Math.random() - 0.5
-      })
-      
-      // Give BYE to the lowest ranked player
-      const byePlayer = unpaired.shift()!
-      assignBye(byePlayer, newPairings, currentRound, updatePlayerBye)
+        const byePlayer = unpaired.shift()!
+        assignBye(byePlayer, newPairings, currentRound, updatePlayerBye)
+      }
     }
     
-    // Pair remaining players randomly
-    while (unpaired.length > 1) {
+    // Pair remaining players (this should now be even number)
+    while (unpaired.length >= 2) {
       const player1 = unpaired.shift()!
-      const player2 = unpaired.shift()!
+      // Try to find the best available opponent (avoiding repeats if possible)
+      let bestOpponentIndex = 0
+      
+      for (let i = 1; i < unpaired.length; i++) {
+        if (!havePlayedBefore(player1.id, unpaired[i].id, allPairings)) {
+          bestOpponentIndex = i
+          break
+        }
+      }
+      
+      const player2 = unpaired.splice(bestOpponentIndex, 1)[0]
       createPairing(player1, player2, newPairings, currentRound)
-    }
-    
-    // If there's still one unpaired (shouldn't happen with proper logic)
-    if (unpaired.length === 1) {
-      assignBye(unpaired[0], newPairings, currentRound, updatePlayerBye)
     }
   }
 
